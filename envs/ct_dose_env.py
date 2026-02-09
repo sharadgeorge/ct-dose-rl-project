@@ -184,14 +184,15 @@ class CTDoseEnv(gym.Env):
         lung_mask_r = ((x - lung_cx_r) / a_lung) ** 2 + ((y - center) / b_lung) ** 2 <= 1
         phantom[lung_mask_r] = 0.05  # Air
         
-        # Spine
+        # Spine (posterior — high y in image coordinates)
         spine_a, spine_b = size * 0.05, size * 0.12
-        spine_mask = ((x - center) / spine_a) ** 2 + ((y - center) / spine_b) ** 2 <= 1
+        spine_cy = center + int(size * 0.18)
+        spine_mask = ((x - center) / spine_a) ** 2 + ((y - spine_cy) / spine_b) ** 2 <= 1
         phantom[spine_mask] = 1.0  # Bone
-        
-        # Heart (left of center)
-        heart_cx = center - size // 10
-        heart_cy = center + size // 15
+
+        # Heart (left of center, anterior — low y)
+        heart_cx = center - int(size * 0.12)
+        heart_cy = center - int(size * 0.05)
         heart_r = size * 0.1
         heart_mask = (x - heart_cx) ** 2 + (y - heart_cy) ** 2 <= heart_r ** 2
         phantom[heart_mask] = 0.5  # Dense tissue
