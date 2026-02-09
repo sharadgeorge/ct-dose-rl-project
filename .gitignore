@@ -1,5 +1,6 @@
 venv/
 outputs/
+!outputs/PPO_chest_best_model/
 __pycache__/
 *.pyc
 .claude/
