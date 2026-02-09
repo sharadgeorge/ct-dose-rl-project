@@ -74,8 +74,11 @@ def train(args):
         image_size=256,
         mA_levels=(50, 100, 150, 200, 250),
         noise_scale=args.noise_scale,
+        noise_exponent=args.noise_exponent,
+        step_dose_penalty=args.step_dose_penalty,
         dose_weight=args.dose_weight,
         quality_weight=args.quality_weight,
+        ssim_percentile=args.ssim_percentile,
     )
     
     # Create output directory
@@ -130,7 +133,7 @@ def train(args):
             gamma=0.99,
             gae_lambda=0.95,
             clip_range=0.2,
-            ent_coef=0.01,
+            ent_coef=args.ent_coef,
             **common_kwargs,
         )
     elif args.algorithm == "DQN":
@@ -198,8 +201,11 @@ def train(args):
         f.write(f"Timesteps: {args.timesteps}\n")
         f.write(f"n_angles: {args.n_angles}\n")
         f.write(f"noise_scale: {args.noise_scale}\n")
+        f.write(f"noise_exponent: {args.noise_exponent}\n")
+        f.write(f"step_dose_penalty: {args.step_dose_penalty}\n")
         f.write(f"dose_weight: {args.dose_weight}\n")
         f.write(f"quality_weight: {args.quality_weight}\n")
+        f.write(f"ssim_percentile: {args.ssim_percentile}\n")
         f.write(f"learning_rate: {args.learning_rate}\n")
         f.write(f"seed: {args.seed}\n")
     
@@ -239,20 +245,44 @@ def main():
     parser.add_argument(
         "--noise_scale",
         type=float,
-        default=0.008,
-        help="Base noise level"
+        default=0.5,
+        help="Global noise amplitude"
+    )
+    parser.add_argument(
+        "--noise_exponent",
+        type=float,
+        default=0.08,
+        help="Exponential noise strength (thick paths get more noise)"
+    )
+    parser.add_argument(
+        "--step_dose_penalty",
+        type=float,
+        default=0.02,
+        help="Per-step mA cost penalty"
     )
     parser.add_argument(
         "--dose_weight",
         type=float,
-        default=0.2,
-        help="Weight for dose penalty in reward"
+        default=0.0,
+        help="Weight for dose penalty in final reward (0 = dose penalized per-step only)"
     )
     parser.add_argument(
         "--quality_weight",
         type=float,
         default=1.0,
         help="Weight for image quality in reward"
+    )
+    parser.add_argument(
+        "--ent_coef",
+        type=float,
+        default=0.01,
+        help="Entropy coefficient for PPO (higher = more exploration)"
+    )
+    parser.add_argument(
+        "--ssim_percentile",
+        type=float,
+        default=5.0,
+        help="Percentile of local SSIM map for quality metric (lower = more worst-region focus)"
     )
     
     # Training

@@ -33,10 +33,13 @@ class ScanConfig:
     n_angles: int = 60           # Number of projection angles
     image_size: int = 256        # Phantom/reconstruction size
     mA_levels: Tuple = (50, 100, 150, 200, 250)  # Available tube currents
-    noise_scale: float = 0.008   # Base noise level at reference mA
+    noise_scale: float = 0.5     # Global noise amplitude
+    noise_exponent: float = 0.08 # Exponential noise strength (thick paths get more noise)
     reference_mA: float = 250    # Reference mA for noise scaling
-    dose_weight: float = 0.2     # Weight for dose penalty in reward
+    step_dose_penalty: float = 0.02  # Per-step mA cost
+    dose_weight: float = 0.0     # Weight for dose penalty in reward (now per-step)
     quality_weight: float = 1.0  # Weight for image quality in reward
+    ssim_percentile: float = 5.0 # Percentile of local SSIM map (lower = more worst-region focus)
 
 
 class CTDoseEnv(gym.Env):
@@ -208,25 +211,23 @@ class CTDoseEnv(gym.Env):
         self.clean_sinogram = radon(self.phantom, theta=self.angles, circle=True)
         
         # Compute path lengths (body thickness) at each angle
-        # Sum of projection approximates total attenuation path
-        self.path_lengths = np.sum(self.clean_sinogram, axis=0)
+        # Max of projection captures peak attenuation (varies with angle)
+        self.path_lengths = np.max(self.clean_sinogram, axis=0)
         self.path_lengths_normalized = self.path_lengths / np.max(self.path_lengths)
     
     def _add_noise(self, projection: np.ndarray, mA: float) -> np.ndarray:
         """
         Add realistic CT noise to a projection.
-        
-        Noise model: σ ∝ 1/√(mA) (Poisson statistics)
-        Higher mA = more photons = lower noise
+
+        Exponential noise model: thick paths get disproportionately more noise,
+        creating an incentive for higher mA at those angles.
+        σ ∝ √(exp(exponent * |projection|) / mA)
         """
-        # Noise standard deviation inversely proportional to sqrt(mA)
-        noise_std = self.config.noise_scale * np.sqrt(self.config.reference_mA / mA)
-        
-        # Add Gaussian noise (approximation of Poisson at high counts)
-        noise = noise_std * np.random.randn(*projection.shape)
-        noisy_projection = projection + noise * np.abs(projection).mean()
-        
-        return noisy_projection
+        exponent = np.clip(self.config.noise_exponent * np.abs(projection), 0, 20)
+        noise = (self.config.noise_scale
+                 * np.sqrt(np.exp(exponent) / mA)
+                 * np.random.randn(*projection.shape))
+        return projection + noise
     
     def _get_observation(self) -> np.ndarray:
         """Get current observation."""
@@ -274,21 +275,24 @@ class CTDoseEnv(gym.Env):
         recon_crop = self.reconstruction[:min_size, :min_size]
         ref_crop = reference[:min_size, :min_size]
         
-        quality = ssim(recon_crop, ref_crop, data_range=ref_crop.max() - ref_crop.min())
-        
+        _, ssim_map = ssim(recon_crop, ref_crop, data_range=ref_crop.max() - ref_crop.min(), full=True)
+        quality = float(np.percentile(ssim_map, self.config.ssim_percentile))
+        global_ssim = float(np.mean(ssim_map))
+
         # Normalize dose (0 = minimum possible, 1 = maximum possible)
         min_dose = self.config.n_angles * min(self.config.mA_levels)
         max_dose = self.config.n_angles * max(self.config.mA_levels)
         dose_normalized = (self.total_dose - min_dose) / (max_dose - min_dose)
-        
+
         # Compute reward
         reward = (
-            self.config.quality_weight * quality - 
+            self.config.quality_weight * quality -
             self.config.dose_weight * dose_normalized
         ) * 10  # Scale for easier learning
-        
+
         metrics = {
             "ssim": quality,
+            "global_ssim": global_ssim,
             "total_dose": self.total_dose,
             "dose_normalized": dose_normalized,
             "mean_mA": np.mean(self.mA_history),
@@ -353,19 +357,25 @@ class CTDoseEnv(gym.Env):
         terminated = self.current_angle_idx >= self.config.n_angles
         truncated = False
         
+        # Per-step dose penalty: penalize high mA choices immediately
+        min_mA = min(self.config.mA_levels)
+        max_mA = max(self.config.mA_levels)
+        step_reward = -self.config.step_dose_penalty * (mA - min_mA) / (max_mA - min_mA)
+
         if terminated:
-            reward, metrics = self._compute_reward()
+            final_reward, metrics = self._compute_reward()
+            reward = step_reward + final_reward
             info = metrics
         else:
-            reward = 0.0  # Delayed reward - only at end
+            reward = step_reward
             info = {
                 "current_angle": self.current_angle_idx,
                 "mA_used": mA,
                 "cumulative_dose": self.total_dose,
             }
-        
+
         obs = self._get_observation()
-        
+
         return obs, reward, terminated, truncated, info
     
     def render(self):
@@ -484,20 +494,26 @@ class CTDoseEnvContinuous(CTDoseEnv):
         
         # Check if scan complete
         terminated = self.current_angle_idx >= self.config.n_angles
-        
+
+        # Per-step dose penalty
+        min_mA = min(self.config.mA_levels)
+        max_mA = max(self.config.mA_levels)
+        step_reward = -self.config.step_dose_penalty * (mA - min_mA) / (max_mA - min_mA)
+
         if terminated:
-            reward, metrics = self._compute_reward()
+            final_reward, metrics = self._compute_reward()
+            reward = step_reward + final_reward
             info = metrics
         else:
-            reward = 0.0
+            reward = step_reward
             info = {
                 "current_angle": self.current_angle_idx,
                 "mA_used": mA,
                 "cumulative_dose": self.total_dose,
             }
-        
+
         obs = self._get_observation()
-        
+
         return obs, reward, terminated, False, info
 
 
