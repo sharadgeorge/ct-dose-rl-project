@@ -1,0 +1,24 @@
+# CT Dose Optimization RL Project
+# Install with: pip install -r requirements.txt
+
+# Core RL
+gymnasium>=0.29.0
+stable-baselines3>=2.2.0
+
+# Deep Learning
+torch>=2.0.0
+
+# Image Processing & CT Simulation
+scikit-image>=0.21.0
+numpy>=1.24.0
+
+# Visualization
+matplotlib>=3.7.0
+
+# Utilities
+tqdm>=4.65.0
+tensorboard>=2.14.0
+
+# Jupyter (for educational notebook)
+jupyter>=1.0.0
+ipykernel>=6.25.0
