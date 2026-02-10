@@ -183,6 +183,102 @@ def test_reward_structure():
     return True
 
 
+def test_budget_mode_basic():
+    """Test that budget mode tracks dose correctly without clamping."""
+    print("=" * 60)
+    print("TEST 6: Budget Mode Basic")
+    print("=" * 60)
+
+    # Budget = 30 angles * 150 mA = 4500 — exactly enough for all 150 mA
+    config = ScanConfig(n_angles=30, dose_budget=4500.0, step_dose_penalty=0.0)
+    env = CTDoseEnv(config=config, phantom_type="shepp_logan")
+    obs, _ = env.reset(seed=42)
+
+    for _ in range(30):
+        obs, reward, done, _, info = env.step(2)  # action 2 = 150 mA
+
+    assert done, "Episode should be done after 30 angles"
+    assert info["n_clamped"] == 0, f"Expected 0 clamped, got {info['n_clamped']}"
+    assert abs(info["total_dose"] - 4500) < 1e-6, f"Expected dose 4500, got {info['total_dose']}"
+    assert abs(info["budget_remaining"]) < 1e-6, f"Expected 0 budget remaining, got {info['budget_remaining']}"
+
+    print(f"  Total dose: {info['total_dose']}, Budget remaining: {info['budget_remaining']}")
+    print(f"  Clamped: {info['n_clamped']}")
+    print("  PASS: budget exactly exhausted, 0 clamps")
+    env.close()
+    print()
+    return True
+
+
+def test_budget_clamping():
+    """Test that actions are clamped when budget is exceeded."""
+    print("=" * 60)
+    print("TEST 7: Budget Clamping")
+    print("=" * 60)
+
+    # Budget = 600, 10 angles. Spend 250+250 = 500, leaving 100.
+    config = ScanConfig(n_angles=10, dose_budget=600.0, step_dose_penalty=0.0)
+    env = CTDoseEnv(config=config, phantom_type="shepp_logan")
+    obs, _ = env.reset(seed=42)
+
+    # Step 1: 250 mA (action 4)
+    _, _, _, _, info1 = env.step(4)
+    assert not info1["was_clamped"], "Step 1 should not be clamped"
+    assert abs(info1["budget_remaining"] - 350) < 1e-6
+
+    # Step 2: 250 mA (action 4)
+    _, _, _, _, info2 = env.step(4)
+    assert not info2["was_clamped"], "Step 2 should not be clamped"
+    assert abs(info2["budget_remaining"] - 100) < 1e-6
+
+    # Step 3: request 250 mA but only 100 remaining — should clamp to 100
+    _, _, _, _, info3 = env.step(4)
+    assert info3["was_clamped"], "Step 3 should be clamped (250 > 100 remaining)"
+    assert info3["n_clamped"] == 1
+    assert abs(info3["budget_remaining"]) < 1e-6, f"Expected 0 remaining, got {info3['budget_remaining']}"
+
+    # Step 4: request 200 mA but 0 remaining — forced to min mA (50)
+    _, _, _, _, info4 = env.step(3)
+    assert info4["was_clamped"], "Step 4 should be clamped (0 budget remaining)"
+    assert info4["n_clamped"] == 2
+
+    print(f"  After 250+250: budget_remaining={info2['budget_remaining']}")
+    print(f"  After clamped 250->100: budget_remaining={info3['budget_remaining']}")
+    print(f"  After forced to min mA: n_clamped={info4['n_clamped']}")
+    print("  PASS: clamping works correctly")
+    env.close()
+    print()
+    return True
+
+
+def test_budget_observation_decreases():
+    """Test that obs[5] (budget fraction) starts at 1.0 and strictly decreases."""
+    print("=" * 60)
+    print("TEST 8: Budget Observation Decreases")
+    print("=" * 60)
+
+    config = ScanConfig(n_angles=10, dose_budget=2000.0, step_dose_penalty=0.0)
+    env = CTDoseEnv(config=config, phantom_type="shepp_logan")
+    obs, _ = env.reset(seed=42)
+
+    assert abs(obs[5] - 1.0) < 1e-6, f"Initial obs[5] should be 1.0, got {obs[5]}"
+
+    prev_budget_obs = obs[5]
+    for i in range(10):
+        obs, _, done, _, _ = env.step(2)  # 150 mA each step
+        if not done:
+            assert obs[5] < prev_budget_obs, (
+                f"Step {i+1}: obs[5]={obs[5]} should be < prev {prev_budget_obs}"
+            )
+            prev_budget_obs = obs[5]
+
+    print(f"  obs[5] decreased from 1.0 to {prev_budget_obs:.4f}")
+    print("  PASS: budget observation strictly decreasing")
+    env.close()
+    print()
+    return True
+
+
 def visualize_episode():
     """Run and visualize a sample episode."""
     print("=" * 60)
@@ -233,6 +329,9 @@ def main():
         ("Observation Bounds", test_observation_bounds),
         ("Determinism", test_determinism),
         ("Reward Structure", test_reward_structure),
+        ("Budget Mode Basic", test_budget_mode_basic),
+        ("Budget Clamping", test_budget_clamping),
+        ("Budget Observation Decreases", test_budget_observation_decreases),
     ]
     
     results = []

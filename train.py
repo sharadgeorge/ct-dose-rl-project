@@ -80,6 +80,7 @@ def train(args):
         dose_weight=args.dose_weight,
         quality_weight=args.quality_weight,
         ssim_percentile=args.ssim_percentile,
+        dose_budget=args.dose_budget,
     )
     
     # Create output directory
@@ -208,6 +209,7 @@ def train(args):
         f.write(f"dose_weight: {args.dose_weight}\n")
         f.write(f"quality_weight: {args.quality_weight}\n")
         f.write(f"ssim_percentile: {args.ssim_percentile}\n")
+        f.write(f"dose_budget: {args.dose_budget}\n")
         f.write(f"learning_rate: {args.learning_rate}\n")
         f.write(f"seed: {args.seed}\n")
     
@@ -292,7 +294,13 @@ def main():
         default=5.0,
         help="Percentile of local SSIM map for quality metric (lower = more worst-region focus)"
     )
-    
+    parser.add_argument(
+        "--dose_budget",
+        type=float,
+        default=None,
+        help="Fixed dose budget for the scan (None = unlimited, e.g. 9000 for avg 150 mA/angle)"
+    )
+
     # Training
     parser.add_argument(
         "--timesteps",

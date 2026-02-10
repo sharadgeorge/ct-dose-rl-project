@@ -41,6 +41,7 @@ class ScanConfig:
     dose_weight: float = 0.0     # Weight for dose penalty in reward (now per-step)
     quality_weight: float = 1.0  # Weight for image quality in reward
     ssim_percentile: float = 5.0 # Percentile of local SSIM map (lower = more worst-region focus)
+    dose_budget: Optional[float] = None  # Fixed dose budget (None = legacy unlimited mode)
 
 
 class CTDoseEnv(gym.Env):
@@ -294,9 +295,12 @@ class CTDoseEnv(gym.Env):
             std_tissue = 0.0
             width_frac = 0.0
 
-        # Normalized dose used
-        max_possible_dose = self.config.n_angles * max(self.config.mA_levels)
-        dose_normalized = self.total_dose / max_possible_dose
+        # Normalized dose / budget observation
+        if self.config.dose_budget is not None:
+            dose_normalized = max(0.0, self.budget_remaining / self.config.dose_budget)
+        else:
+            max_possible_dose = self.config.n_angles * max(self.config.mA_levels)
+            dose_normalized = self.total_dose / max_possible_dose
 
         # Last mA used (normalized)
         mA_normalized = (self.last_mA - min(self.config.mA_levels)) / (
@@ -371,6 +375,13 @@ class CTDoseEnv(gym.Env):
         self.total_dose = 0
         self.last_mA = self.config.mA_levels[2]  # Medium
         self.reconstruction = None
+
+        # Budget mode state
+        if self.config.dose_budget is not None:
+            self.budget_remaining = self.config.dose_budget
+        else:
+            self.budget_remaining = float('inf')
+        self.n_clamped = 0
         
         obs = self._get_observation()
         info = {
@@ -392,26 +403,38 @@ class CTDoseEnv(gym.Env):
         """
         # Get mA for this projection
         mA = self.config.mA_levels[action]
+
+        # Budget clamping: if budget mode and mA exceeds remaining budget
+        was_clamped = False
+        if self.config.dose_budget is not None and mA > self.budget_remaining:
+            # Find largest affordable mA level
+            affordable = [m for m in self.config.mA_levels if m <= self.budget_remaining]
+            mA = max(affordable) if affordable else min(self.config.mA_levels)
+            was_clamped = True
+            self.n_clamped += 1
+
         self.last_mA = mA
         self.mA_history.append(mA)
-        
+
         # Get clean projection at current angle
         clean_projection = self.clean_sinogram[:, self.current_angle_idx]
-        
+
         # Add noise based on mA
         noisy_projection = self._add_noise(clean_projection, mA)
         self.sinogram.append(noisy_projection)
-        
-        # Accumulate dose
+
+        # Accumulate dose and update budget
         self.total_dose += mA
-        
+        if self.config.dose_budget is not None:
+            self.budget_remaining = max(0.0, self.budget_remaining - mA)
+
         # Move to next angle
         self.current_angle_idx += 1
-        
+
         # Check if scan complete
         terminated = self.current_angle_idx >= self.config.n_angles
         truncated = False
-        
+
         # Per-step dose penalty: penalize high mA choices immediately
         min_mA = min(self.config.mA_levels)
         max_mA = max(self.config.mA_levels)
@@ -428,6 +451,12 @@ class CTDoseEnv(gym.Env):
                 "mA_used": mA,
                 "cumulative_dose": self.total_dose,
             }
+
+        # Add budget info
+        if self.config.dose_budget is not None:
+            info["budget_remaining"] = self.budget_remaining
+            info["n_clamped"] = self.n_clamped
+            info["was_clamped"] = was_clamped
 
         obs = self._get_observation()
 
@@ -529,30 +558,39 @@ class CTDoseEnvContinuous(CTDoseEnv):
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
         """Step with continuous mA action."""
         # Clip action to valid range
-        mA = float(np.clip(action[0], min(self.config.mA_levels), max(self.config.mA_levels)))
-        
+        min_mA = min(self.config.mA_levels)
+        max_mA = max(self.config.mA_levels)
+        mA = float(np.clip(action[0], min_mA, max_mA))
+
+        # Budget clamping: if budget mode and mA exceeds remaining budget
+        was_clamped = False
+        if self.config.dose_budget is not None and mA > self.budget_remaining:
+            mA = max(min_mA, self.budget_remaining)
+            was_clamped = True
+            self.n_clamped += 1
+
         self.last_mA = mA
         self.mA_history.append(mA)
-        
+
         # Get clean projection at current angle
         clean_projection = self.clean_sinogram[:, self.current_angle_idx]
-        
+
         # Add noise based on mA
         noisy_projection = self._add_noise(clean_projection, mA)
         self.sinogram.append(noisy_projection)
-        
-        # Accumulate dose
+
+        # Accumulate dose and update budget
         self.total_dose += mA
-        
+        if self.config.dose_budget is not None:
+            self.budget_remaining = max(0.0, self.budget_remaining - mA)
+
         # Move to next angle
         self.current_angle_idx += 1
-        
+
         # Check if scan complete
         terminated = self.current_angle_idx >= self.config.n_angles
 
         # Per-step dose penalty
-        min_mA = min(self.config.mA_levels)
-        max_mA = max(self.config.mA_levels)
         step_reward = -self.config.step_dose_penalty * (mA - min_mA) / (max_mA - min_mA)
 
         if terminated:
@@ -566,6 +604,12 @@ class CTDoseEnvContinuous(CTDoseEnv):
                 "mA_used": mA,
                 "cumulative_dose": self.total_dose,
             }
+
+        # Add budget info
+        if self.config.dose_budget is not None:
+            info["budget_remaining"] = self.budget_remaining
+            info["n_clamped"] = self.n_clamped
+            info["was_clamped"] = was_clamped
 
         obs = self._get_observation()
 
