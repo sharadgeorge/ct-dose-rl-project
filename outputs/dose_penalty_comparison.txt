@@ -1,0 +1,31 @@
+Dose Penalty Comparison (het_noise_scale=0.5, 7-dim obs, 500k steps, chest phantom)
+===================================================================================
+
+step_dose_penalty=0.05
+----------------------
+Policy                   Reward     SSIM   p5 SSIM     Dose   mA std
+Fixed 150 mA              5.128   0.9014    0.6628     9000      0.0
+Fixed 250 mA              4.708   0.9352    0.7708    15000      0.0
+Oracle (thickness)        5.447   0.9209    0.7485    11150     42.9
+Trained PPO               5.603   0.8976    0.6928     8300     46.0  <-- best reward
+Notes: PPO wins reward but lowest SSIM. Aggressively saves dose (mean 138 mA).
+
+step_dose_penalty=0.02
+----------------------
+Policy                   Reward     SSIM   p5 SSIM     Dose   mA std
+Fixed 150 mA              6.028   0.9014    0.6628     9000      0.0
+Fixed 250 mA              6.508   0.9352    0.7708    15000      0.0
+Oracle (thickness)        6.670   0.9209    0.7485    11150     42.9  <-- best reward
+Trained PPO               6.565   0.9323    0.7680    14150     31.7
+Notes: Oracle wins reward. PPO barely modulates (mean 236 mA), nearly fixed-high.
+
+step_dose_penalty=0.03  *** BEST ***
+----------------------
+Policy                   Reward     SSIM   p5 SSIM     Dose   mA std
+Fixed 150 mA              5.728   0.9014    0.6628     9000      0.0
+Fixed 250 mA              5.918   0.9352    0.7718    15000      0.0
+Oracle (thickness)        6.251   0.9208    0.7474    11150     42.9  <-- best reward
+Trained PPO               6.233   0.9227    0.7538    11700     48.0
+Notes: PPO nearly matches Oracle reward (6.23 vs 6.25). PPO has BEST p5 SSIM (0.754)
+       and BEST global SSIM among modulating policies. Mean 195 mA, uses 150/200/250.
+       Best balance of quality and dose efficiency.

@@ -35,6 +35,7 @@ class ScanConfig:
     mA_levels: Tuple = (50, 100, 150, 200, 250)  # Available tube currents
     noise_scale: float = 0.5     # Global noise amplitude
     noise_exponent: float = 0.08 # Exponential noise strength (thick paths get more noise)
+    het_noise_scale: float = 0.5 # Heterogeneity noise at density transitions
     reference_mA: float = 250    # Reference mA for noise scaling
     step_dose_penalty: float = 0.02  # Per-step mA cost
     dose_weight: float = 0.0     # Weight for dose penalty in reward (now per-step)
@@ -51,7 +52,10 @@ class CTDoseEnv(gym.Env):
     
     Observation Space:
         - scan_progress: How far through the scan (0 to 1)
-        - body_thickness: Estimated tissue thickness at current angle (normalized)
+        - body_thickness: Peak attenuation at current angle (normalized)
+        - mean_tissue: Mean attenuation of body region (tissue density)
+        - std_tissue: Std of body region attenuation (tissue heterogeneity)
+        - width_frac: Fraction of detector elements hitting body (geometric width)
         - dose_used: Cumulative dose so far (normalized)
         - last_mA: Previous mA setting (normalized)
         
@@ -98,11 +102,11 @@ class CTDoseEnv(gym.Env):
         # Action space: discrete mA levels
         self.action_space = spaces.Discrete(len(self.config.mA_levels))
         
-        # Observation space: [progress, thickness, dose_used, last_mA]
+        # Observation space: [progress, thickness, mean_tissue, std_tissue, width_frac, dose_used, last_mA]
         self.observation_space = spaces.Box(
             low=0.0,
             high=1.0,
-            shape=(4,),
+            shape=(7,),
             dtype=np.float32
         )
         
@@ -207,50 +211,100 @@ class CTDoseEnv(gym.Env):
         return phantom
     
     def _precompute_clean_sinogram(self):
-        """Precompute noise-free sinogram for reference and thickness estimation."""
+        """Precompute noise-free sinogram for reference and thickness/density estimation."""
         from skimage.transform import radon
         self.clean_sinogram = radon(self.phantom, theta=self.angles, circle=True)
-        
-        # Compute path lengths (body thickness) at each angle
-        # Max of projection captures peak attenuation (varies with angle)
+
+        # Profile statistics at each angle, computed over body region only
+        # (detector bins where the ray actually hits tissue, not zero-padding)
+        n_angles = self.clean_sinogram.shape[1]
+        threshold = 0.01 * np.max(self.clean_sinogram)  # 1% of max to filter padding
+
+        # Max: peak attenuation ("thickness" — existing feature)
         self.path_lengths = np.max(self.clean_sinogram, axis=0)
         self.path_lengths_normalized = self.path_lengths / np.max(self.path_lengths)
+
+        # Per-angle statistics over body region only
+        self.profile_mean_tissue = np.zeros(n_angles)
+        self.profile_std_tissue = np.zeros(n_angles)
+        self.profile_width_frac = np.zeros(n_angles)
+
+        for i in range(n_angles):
+            profile = self.clean_sinogram[:, i]
+            body_mask = profile > threshold
+            n_body = np.sum(body_mask)
+            if n_body > 0:
+                body_vals = profile[body_mask]
+                self.profile_mean_tissue[i] = np.mean(body_vals)
+                self.profile_std_tissue[i] = np.std(body_vals)
+                self.profile_width_frac[i] = n_body / len(profile)
+
+        # Normalize all to [0, 1]
+        max_val = np.max(self.profile_mean_tissue)
+        self.profile_mean_normalized = self.profile_mean_tissue / max_val if max_val > 0 else self.profile_mean_tissue
+
+        max_val = np.max(self.profile_std_tissue)
+        self.profile_std_normalized = self.profile_std_tissue / max_val if max_val > 0 else self.profile_std_tissue
+
+        max_val = np.max(self.profile_width_frac)
+        self.profile_width_normalized = self.profile_width_frac / max_val if max_val > 0 else self.profile_width_frac
     
     def _add_noise(self, projection: np.ndarray, mA: float) -> np.ndarray:
         """
         Add realistic CT noise to a projection.
 
-        Exponential noise model: thick paths get disproportionately more noise,
-        creating an incentive for higher mA at those angles.
-        σ ∝ √(exp(exponent * |projection|) / mA)
+        Two noise components:
+        1. Exponential noise: thick paths get disproportionately more noise
+           σ ∝ √(exp(exponent * |projection|) / mA)
+        2. Heterogeneity noise: sharp density transitions (bone/air, tissue/air)
+           get extra noise, modeling beam hardening and photon starvation artifacts.
+           σ ∝ |gradient(projection)| / √mA
         """
+        # Component 1: exponential (thickness-dependent) noise
         exponent = np.clip(self.config.noise_exponent * np.abs(projection), 0, 20)
         noise = (self.config.noise_scale
                  * np.sqrt(np.exp(exponent) / mA)
                  * np.random.randn(*projection.shape))
+
+        # Component 2: heterogeneity noise at density transitions
+        if self.config.het_noise_scale > 0:
+            gradient = np.abs(np.diff(projection, prepend=projection[0]))
+            het_noise = (self.config.het_noise_scale
+                         * gradient / np.sqrt(mA)
+                         * np.random.randn(*projection.shape))
+            noise = noise + het_noise
+
         return projection + noise
     
     def _get_observation(self) -> np.ndarray:
-        """Get current observation."""
+        """Get current observation (7-dim: progress, profile stats, dose, last_mA)."""
         # Progress through scan (0 to 1)
         progress = self.current_angle_idx / self.config.n_angles
-        
-        # Body thickness at current angle (if not done)
+
+        # Profile statistics at current angle
         if self.current_angle_idx < self.config.n_angles:
-            thickness = self.path_lengths_normalized[self.current_angle_idx]
+            idx = self.current_angle_idx
+            thickness = self.path_lengths_normalized[idx]        # peak attenuation
+            mean_tissue = self.profile_mean_normalized[idx]      # avg tissue density
+            std_tissue = self.profile_std_normalized[idx]        # tissue heterogeneity
+            width_frac = self.profile_width_normalized[idx]      # geometric body width
         else:
             thickness = 0.0
-        
+            mean_tissue = 0.0
+            std_tissue = 0.0
+            width_frac = 0.0
+
         # Normalized dose used
         max_possible_dose = self.config.n_angles * max(self.config.mA_levels)
         dose_normalized = self.total_dose / max_possible_dose
-        
+
         # Last mA used (normalized)
         mA_normalized = (self.last_mA - min(self.config.mA_levels)) / (
             max(self.config.mA_levels) - min(self.config.mA_levels)
         )
-        
-        return np.array([progress, thickness, dose_normalized, mA_normalized], dtype=np.float32)
+
+        return np.array([progress, thickness, mean_tissue, std_tissue, width_frac,
+                         dose_normalized, mA_normalized], dtype=np.float32)
     
     def _compute_reward(self) -> Tuple[float, Dict[str, float]]:
         """Compute final reward based on image quality and dose."""

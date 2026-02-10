@@ -75,6 +75,7 @@ def train(args):
         mA_levels=(50, 100, 150, 200, 250),
         noise_scale=args.noise_scale,
         noise_exponent=args.noise_exponent,
+        het_noise_scale=args.het_noise_scale,
         step_dose_penalty=args.step_dose_penalty,
         dose_weight=args.dose_weight,
         quality_weight=args.quality_weight,
@@ -202,6 +203,7 @@ def train(args):
         f.write(f"n_angles: {args.n_angles}\n")
         f.write(f"noise_scale: {args.noise_scale}\n")
         f.write(f"noise_exponent: {args.noise_exponent}\n")
+        f.write(f"het_noise_scale: {args.het_noise_scale}\n")
         f.write(f"step_dose_penalty: {args.step_dose_penalty}\n")
         f.write(f"dose_weight: {args.dose_weight}\n")
         f.write(f"quality_weight: {args.quality_weight}\n")
@@ -253,6 +255,12 @@ def main():
         type=float,
         default=0.08,
         help="Exponential noise strength (thick paths get more noise)"
+    )
+    parser.add_argument(
+        "--het_noise_scale",
+        type=float,
+        default=0.5,
+        help="Heterogeneity noise scale (density transitions get more noise)"
     )
     parser.add_argument(
         "--step_dose_penalty",
