@@ -272,6 +272,18 @@ def main():
         help="Number of evaluation episodes"
     )
     parser.add_argument(
+        "--dose_budget",
+        type=float,
+        default=None,
+        help="Fixed dose budget (None = unlimited)"
+    )
+    parser.add_argument(
+        "--step_dose_penalty",
+        type=float,
+        default=0.02,
+        help="Per-step mA cost penalty"
+    )
+    parser.add_argument(
         "--output",
         type=str,
         default="evaluation_results.png",
@@ -281,7 +293,11 @@ def main():
     args = parser.parse_args()
     
     # Create environment
-    config = ScanConfig(n_angles=args.n_angles)
+    config = ScanConfig(
+        n_angles=args.n_angles,
+        dose_budget=args.dose_budget,
+        step_dose_penalty=args.step_dose_penalty,
+    )
     env = CTDoseEnv(config=config, phantom_type=args.phantom)
     
     # Dictionary to store all metrics
